@@ -1,25 +1,25 @@
 /**
- * SIPD DALEV - Download Subkegiatan
+ * SIPD DALEV - Download Program & Subkegiatan
  *
- * Menambahkan tombol "Download Subkegiatan" pada halaman dashboard DALEV
- * (?m=daerah_dalev_dashboard). Tombol menarik SELURUH baris DataTable
- * daerah_dalev_realisasi_subkegiatan (looping per halaman sampai habis)
- * lalu menyimpannya sebagai satu file JSON.
+ * Menambahkan tombol "Download Program" dan "Download Subkegiatan" pada
+ * halaman dashboard DALEV (?m=daerah_dalev_dashboard). Tombol menarik SELURUH
+ * baris DataTable terkait (looping per halaman sampai habis) lalu
+ * menyimpannya sebagai satu file JSON.
  */
 
 const PAKET_DASHBOARD = "daerah_dalev_dashboard";
-const PAKET_SUBKEGIATAN = "daerah_dalev_realisasi_subkegiatan";
 
-// Jumlah baris per request. DataTable di halaman aslinya memakai 50;
+// Jumlah baris per request. DataTable aslinya memakai 50-100;
 // 100 lebih hemat request tapi tetap aman untuk server.
 const UKURAN_HALAMAN = 100;
 
 // Jeda antar request supaya tidak membebani server SIPD.
 const JEDA_MS = 500;
 
-// Kolom persis seperti yang dikirim DataTable halaman subkegiatan.
-// Urutan menentukan indeks columns[i] pada payload, jadi jangan diacak.
-const KOLOM_SUBKEGIATAN = [
+// Kolom persis seperti yang dikirim DataTable halaman program/subkegiatan.
+// Kedua tabel memakai susunan kolom yang sama. Urutan menentukan indeks
+// columns[i] pada payload, jadi jangan diacak.
+const KOLOM_DATATABLE = [
   { data: "no", name: "", orderable: false },
   { data: "title", name: "title" },
   { data: "indikator", name: "indikator" },
@@ -38,6 +38,48 @@ const KOLOM_SUBKEGIATAN = [
   { data: "rkpd_real_tw4_keu", name: "" },
   { data: "aksi", name: "aksi", orderable: false },
 ];
+
+/**
+ * Dua tabel memakai endpoint dan filter tambahan yang berbeda. `filter`
+ * ditulis urut sesuai payload asli halaman; kodepemda dan kodeskpd disisipkan
+ * lebih dulu oleh pembangun payload karena posisinya selalu di depan.
+ */
+const DATASET = {
+  program: {
+    label: "Program",
+    paket: "daerah_dalev_realisasi_kinerja_program",
+    fungsi: "table_program",
+    filter: {
+      kodeprogram: "",
+      tematik: "",
+      spm: "Semua",
+      jenis: "Semua",
+      "data-valid": "Semua",
+      program_prioritas_nasional: "",
+    },
+  },
+  subkegiatan: {
+    label: "Subkegiatan",
+    paket: "daerah_dalev_realisasi_subkegiatan",
+    fungsi: "table_subkegiatan",
+    filter: {
+      kodeprogram: "",
+      kodekegiatan: "",
+      tematik: "",
+      spm: "Semua",
+      jenis: "Semua",
+      misi_astacita: "",
+      bidang_prioritas: "",
+      program_prioritas: "",
+      kegiatan_prioritas: "",
+      jenis_astacita: "semua",
+      "data-valid": "Semua",
+      program_prioritas_nasional: "",
+      realisasi_gap_sumber: "semua",
+      realisasi_gap_tw: "semua",
+    },
+  },
+};
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -89,11 +131,11 @@ function kodeSkpdTerpilih() {
   return document.querySelector("#fr-kodeskpd-dashboard-rs")?.value || "";
 }
 
-function payloadSubkegiatan({ draw, start, kodepemda, kodeskpd }) {
+function payloadDatatable(dataset, { draw, start, kodepemda, kodeskpd }) {
   const p = new URLSearchParams();
   p.set("draw", String(draw));
 
-  KOLOM_SUBKEGIATAN.forEach((kolom, i) => {
+  KOLOM_DATATABLE.forEach((kolom, i) => {
     p.set(`columns[${i}][data]`, kolom.data);
     p.set(`columns[${i}][name]`, kolom.name);
     p.set(`columns[${i}][searchable]`, "false");
@@ -112,26 +154,15 @@ function payloadSubkegiatan({ draw, start, kodepemda, kodeskpd }) {
 
   p.set("kodepemda", kodepemda);
   p.set("kodeskpd", kodeskpd);
-  p.set("kodeprogram", "");
-  p.set("kodekegiatan", "");
-  p.set("tematik", "");
-  p.set("spm", "Semua");
-  p.set("jenis", "Semua");
-  p.set("misi_astacita", "");
-  p.set("bidang_prioritas", "");
-  p.set("program_prioritas", "");
-  p.set("kegiatan_prioritas", "");
-  p.set("jenis_astacita", "semua");
-  p.set("data-valid", "Semua");
-  p.set("program_prioritas_nasional", "");
-  p.set("realisasi_gap_sumber", "semua");
-  p.set("realisasi_gap_tw", "semua");
+  for (const [nama, nilai] of Object.entries(dataset.filter)) {
+    p.set(nama, nilai);
+  }
 
   return p.toString();
 }
 
-async function ambilHalamanSubkegiatan(konfig, opsi) {
-  const url = `${konfig.baseUrl}/?m=${PAKET_SUBKEGIATAN}&f=table_subkegiatan`;
+async function ambilSatuHalaman(konfig, dataset, opsi) {
+  const url = `${konfig.baseUrl}/?m=${dataset.paket}&f=${dataset.fungsi}`;
 
   const res = await fetch(url, {
     method: "POST",
@@ -141,7 +172,7 @@ async function ambilHalamanSubkegiatan(konfig, opsi) {
       "content-type": "application/x-www-form-urlencoded; charset=UTF-8",
       "x-requested-with": "XMLHttpRequest",
     },
-    body: payloadSubkegiatan(opsi),
+    body: payloadDatatable(dataset, opsi),
   });
 
   if (!res.ok) {
@@ -166,14 +197,14 @@ async function ambilHalamanSubkegiatan(konfig, opsi) {
  * `onProgress` dipanggil tiap halaman selesai, `batal()` dicek sebelum
  * request berikutnya supaya tombol Batal terasa responsif.
  */
-async function ambilSemuaSubkegiatan(konfig, kodeskpd, onProgress, batal) {
+async function ambilSemuaBaris(konfig, dataset, kodeskpd, onProgress, batal) {
   const baris = [];
   let start = 0;
   let draw = 1;
   let total = null;
 
   while (true) {
-    const hasil = await ambilHalamanSubkegiatan(konfig, {
+    const hasil = await ambilSatuHalaman(konfig, dataset, {
       draw: draw++,
       start,
       kodepemda: konfig.kodepemda,
@@ -225,7 +256,8 @@ function stempelWaktu() {
  * Modal progres
  * ------------------------------------------------------------------ */
 
-function bukaModalUnduh(konfig) {
+function bukaModalUnduh(konfig, kunciDataset) {
+  const dataset = DATASET[kunciDataset];
   const kodeskpd = kodeSkpdTerpilih();
   const selectOpd = document.querySelector("#fr-kodeskpd-dashboard-rs");
   const labelOpd = kodeskpd
@@ -247,7 +279,7 @@ function bukaModalUnduh(konfig) {
   `;
   kotak.innerHTML = `
     <h4 style="margin:0 0 12px;font-weight:600;">
-      <i class="fa fa-download"></i> Download Subkegiatan
+      <i class="fa fa-download"></i> Download ${dataset.label}
     </h4>
     <table style="width:100%;font-size:13px;margin-bottom:14px;">
       <tr><td style="width:38%;color:#666;padding:2px 0;">Tahun</td><td>: ${konfig.tahun}</td></tr>
@@ -302,8 +334,9 @@ function bukaModalUnduh(konfig) {
     status.textContent = "Mengambil data...";
 
     try {
-      const { baris, total } = await ambilSemuaSubkegiatan(
+      const { baris, total } = await ambilSemuaBaris(
         konfig,
+        dataset,
         kodeskpd,
         (terambil, jumlah) => {
           const persen = jumlah ? Math.round((terambil / jumlah) * 100) : 100;
@@ -318,12 +351,13 @@ function bukaModalUnduh(konfig) {
         status.innerHTML = `<span style="color:#a94442;">Dibatalkan.</span> ${baris.length} baris yang sempat terambil tetap diunduh.`;
       }
 
-      const namaFile = `subkegiatan_${konfig.kodepemda}_${konfig.tahun}${
+      const namaFile = `${kunciDataset}_${konfig.kodepemda}_${konfig.tahun}${
         kodeskpd ? `_${kodeskpd}` : ""
       }_${stempelWaktu()}.json`;
 
       unduhJson(
         {
+          jenis_data: kunciDataset,
           tahun: konfig.tahun,
           kodepemda: konfig.kodepemda,
           kodeskpd: kodeskpd || null,
@@ -342,7 +376,7 @@ function bukaModalUnduh(konfig) {
         status.innerHTML = `<span style="color:#3c763d;">Selesai.</span> ${baris.length} baris tersimpan ke <b>${namaFile}</b>.`;
       }
     } catch (err) {
-      console.error("[Download Subkegiatan]", err);
+      console.error(`[Download ${dataset.label}]`, err);
       bar.style.background = "#d9534f";
       status.innerHTML = `<span style="color:#a94442;">Gagal:</span> ${err.message}`;
     } finally {
@@ -358,54 +392,73 @@ function bukaModalUnduh(konfig) {
  * Penempatan tombol
  * ------------------------------------------------------------------ */
 
-function buatTombol(konfig) {
+function idTombol(kunciDataset) {
+  return `btn-download-${kunciDataset}`;
+}
+
+function buatTombol(konfig, kunciDataset) {
   const tombol = document.createElement("button");
   tombol.type = "button";
-  tombol.id = "btn-download-subkegiatan";
+  tombol.id = idTombol(kunciDataset);
   tombol.className = "btn btn-primary btn-sm";
-  tombol.title = "Unduh seluruh data realisasi subkegiatan sebagai JSON";
-  tombol.innerHTML = '<i class="fa fa-download"></i> Download Subkegiatan';
-  tombol.addEventListener("click", () => bukaModalUnduh(konfig));
+  tombol.style.marginRight = "6px";
+  tombol.title = `Unduh seluruh data realisasi ${DATASET[kunciDataset].label.toLowerCase()} sebagai JSON`;
+  tombol.innerHTML = `<i class="fa fa-download"></i> Download ${DATASET[kunciDataset].label}`;
+  tombol.addEventListener("click", () => bukaModalUnduh(konfig, kunciDataset));
   return tombol;
 }
 
-function pasangTombol(konfig) {
-  if (document.getElementById("btn-download-subkegiatan")) return true;
-
-  const tombol = buatTombol(konfig);
-
+/** Mengembalikan wadah tombol pada dashboard, atau null kalau belum ada. */
+function wadahTombol() {
   // Prioritas 1: sebelah tombol "Perbarui Data" di kartu Informasi Dashboard.
   const headerInfo = document.querySelector(".dashboard-info-header");
   if (headerInfo) {
-    tombol.style.marginRight = "6px";
-    const btnRefresh = headerInfo.querySelector(".dashboard-btn-refresh");
-    if (btnRefresh) {
-      btnRefresh.parentNode.insertBefore(tombol, btnRefresh);
-    } else {
-      headerInfo.appendChild(tombol);
-    }
-    return true;
+    return {
+      elemen: headerInfo,
+      sebelum: headerInfo.querySelector(".dashboard-btn-refresh"),
+    };
   }
 
   // Prioritas 2: baris tombol Terapkan/Reset pada kartu filter.
   const aksiFilter = document.querySelector(".dashboard-filter-action-btns");
-  if (aksiFilter) {
-    aksiFilter.appendChild(tombol);
-    return true;
-  }
+  if (aksiFilter) return { elemen: aksiFilter, sebelum: null };
 
-  return false;
+  return null;
+}
+
+function pasangTombol(konfig) {
+  const wadah = wadahTombol();
+  if (!wadah) return false;
+
+  for (const kunci of Object.keys(DATASET)) {
+    if (document.getElementById(idTombol(kunci))) continue;
+    const tombol = buatTombol(konfig, kunci);
+    if (wadah.sebelum) {
+      wadah.sebelum.parentNode.insertBefore(tombol, wadah.sebelum);
+    } else {
+      wadah.elemen.appendChild(tombol);
+    }
+  }
+  return true;
 }
 
 /** Cadangan kalau tata letak dashboard berubah: tombol mengambang. */
 function pasangTombolMengambang(konfig) {
-  if (document.getElementById("btn-download-subkegiatan")) return;
-  const tombol = buatTombol(konfig);
-  tombol.style.cssText = `
+  if (document.getElementById("dsk-floating")) return;
+
+  const kotak = document.createElement("div");
+  kotak.id = "dsk-floating";
+  kotak.style.cssText = `
     position: fixed; right: 20px; bottom: 20px; z-index: 19999;
-    box-shadow: 0 2px 10px rgba(0,0,0,.3);
+    display: flex; gap: 6px;
   `;
-  document.body.appendChild(tombol);
+  for (const kunci of Object.keys(DATASET)) {
+    if (document.getElementById(idTombol(kunci))) continue;
+    const tombol = buatTombol(konfig, kunci);
+    tombol.style.boxShadow = "0 2px 10px rgba(0,0,0,.3)";
+    kotak.appendChild(tombol);
+  }
+  document.body.appendChild(kotak);
 }
 
 function halamanDashboardDalev() {
@@ -419,7 +472,7 @@ function init() {
   const konfig = konfigHalaman();
   if (!konfig.sess) {
     console.warn(
-      "[Download Subkegiatan] sess tidak ditemukan di URL, tombol tidak dipasang.",
+      "[Download DALEV] sess tidak ditemukan di URL, tombol tidak dipasang.",
     );
     return;
   }
