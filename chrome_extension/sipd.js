@@ -25,29 +25,25 @@ const JEDA_MS = 500;
  * Tarik Realisasi Keuangan
  * ------------------------------------------------------------------ */
 
-// Endpoint detail realisasi keuangan per indikator output.
+// Endpoint penarikan realisasi keuangan, satu permintaan per subkegiatan.
 const REALISASI = {
   paket: "daerah_dalev_realisasi_subkegiatan",
-  fungsi: "load_realisasi",
+  fungsi: "tarik_realisasi_keuangan",
   // Urutan field form sesuai permintaan asli halaman SIPD.
   parameter: [
-    "tahun",
-    "kodeskpd",
-    "kodeprogram",
-    "kodebidang",
     "kodesubkegiatan",
     "kodekegiatan",
-    "idoutcome",
-    "idoutput",
-    "kodesubkegiatan_indikator",
+    "kodeprogram",
+    "kodeskpd",
+    "tahun",
   ],
 };
 
-// Permintaan realisasi jauh lebih banyak (satu per indikator output), jadi
-// jedanya lebih pendek daripada looping tabel.
+// Permintaan realisasi jauh lebih banyak (satu per subkegiatan), jadi jedanya
+// lebih pendek daripada looping tabel.
 const JEDA_REALISASI_MS = 250;
 
-// Hasil dikirim ke API per sekian indikator, bukan satu-satu.
+// Hasil dikirim ke API per sekian subkegiatan, bukan satu-satu.
 const BATCH_REALISASI = 25;
 
 // Penarikan dihentikan setelah gagal berturut-turut sebanyak ini; biasanya
@@ -691,12 +687,12 @@ function bukaModalRealisasi(konfig) {
     <div style="font-size:13px;margin-bottom:12px;">
       <label style="display:block;font-weight:400;margin:0;">
         <input type="checkbox" id="dsk-r-belum" checked style="margin-right:6px;">
-        Hanya indikator yang belum berhasil ditarik
+        Hanya subkegiatan yang belum berhasil ditarik
       </label>
     </div>
     <div id="dsk-r-status" style="font-size:13px;margin-bottom:8px;">
-      Daftar indikator diambil dari tabel subkegiatan (baris <b>output</b>) di
-      database, lalu ditarik satu per satu dengan jeda ${JEDA_REALISASI_MS} ms.
+      Daftar subkegiatan diambil dari tabel <b>dalev_realisasi_subkegiatan</b>
+      di database, lalu ditarik satu per satu dengan jeda ${JEDA_REALISASI_MS} ms.
     </div>
     <div style="height:8px;background:#eee;border-radius:4px;overflow:hidden;margin-bottom:16px;">
       <div id="dsk-r-bar" style="height:100%;width:0%;background:#5cb85c;transition:width .2s;"></div>
@@ -744,7 +740,7 @@ function bukaModalRealisasi(konfig) {
     btnTutup.textContent = "Batal";
     bar.style.background = "#5cb85c";
     bar.style.width = "0%";
-    status.textContent = "Mengambil daftar indikator dari database...";
+    status.textContent = "Mengambil daftar subkegiatan dari database...";
 
     let job = null;
     let berhasil = 0;
@@ -767,14 +763,14 @@ function bukaModalRealisasi(konfig) {
         kodeskpd,
         cbBelum.checked,
         (sudah, jumlah) => {
-          status.textContent = `Mengambil daftar indikator... ${sudah} dari ${jumlah}`;
+          status.textContent = `Mengambil daftar subkegiatan... ${sudah} dari ${jumlah}`;
         },
       );
 
       if (parameter.length === 0) {
         status.innerHTML = cbBelum.checked
-          ? '<span style="color:#3c763d;">Tidak ada yang perlu ditarik.</span> Semua indikator output sudah punya realisasi. Hilangkan centang untuk menarik ulang.'
-          : '<span style="color:#a94442;">Tidak ada indikator output di database.</span> Jalankan <b>Download Subkegiatan</b> lebih dulu.';
+          ? '<span style="color:#3c763d;">Tidak ada yang perlu ditarik.</span> Semua subkegiatan sudah berhasil ditarik. Hilangkan centang untuk menarik ulang.'
+          : '<span style="color:#a94442;">Tidak ada subkegiatan di database.</span> Jalankan <b>Download Subkegiatan</b> lebih dulu.';
         return;
       }
 
@@ -785,7 +781,7 @@ function bukaModalRealisasi(konfig) {
         kodeskpd: kodeskpd || "",
         perangkat_daerah: labelOpd,
         total_baris_server: parameter.length,
-        // Penarikan bersifat per indikator, tidak menghapus data lain.
+        // Penarikan bersifat per subkegiatan, tidak menghapus data lain.
         mode: "upsert",
         sumber_url: location.href,
       });
@@ -862,7 +858,7 @@ function bukaModalRealisasi(konfig) {
       const ringkasan =
         `${berhasil} realisasi tersimpan` +
         (gagal ? `, ${gagal} gagal` : "") +
-        ` dari ${diproses} indikator yang diproses (total ${parameter.length}).`;
+        ` dari ${diproses} subkegiatan yang diproses (total ${parameter.length}).`;
 
       if (alasanBerhenti) {
         bar.style.background = "#d9534f";
@@ -924,8 +920,8 @@ function daftarTombol() {
     ikon: "fa-money",
     kelas: "btn-warning",
     judul:
-      "Tarik detail realisasi keuangan tiap indikator output subkegiatan " +
-      "berdasarkan data yang sudah tersimpan di database",
+      "Tarik realisasi keuangan tiap subkegiatan berdasarkan data " +
+      "yang sudah tersimpan di database",
     buka: (konfig) => bukaModalRealisasi(konfig),
   });
 

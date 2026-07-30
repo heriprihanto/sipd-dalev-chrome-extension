@@ -55,14 +55,16 @@ tabel `dalev_download_jobs` dengan status `dibatalkan`/`gagal`.
 
 ### Tarik Realisasi Keuangan
 
-Menarik detail realisasi keuangan **per indikator output subkegiatan**
-(`POST ?m=daerah_dalev_realisasi_subkegiatan&f=load_realisasi`). Daftar
-indikatornya dibaca dari database (`dalev_realisasi_subkegiatan` dengan
-`row_type='output'`), jadi **jalankan Download Subkegiatan lebih dulu**.
+Menarik realisasi keuangan **per subkegiatan**
+(`POST ?m=daerah_dalev_realisasi_subkegiatan&f=tarik_realisasi_keuangan`
+dengan 5 field: `kodesubkegiatan`, `kodekegiatan`, `kodeprogram`, `kodeskpd`,
+`tahun`). Daftar subkegiatannya dibaca dari database
+(`dalev_realisasi_subkegiatan`), jadi **jalankan Download Subkegiatan lebih
+dulu**.
 
-- Centang **Hanya indikator yang belum berhasil ditarik** (bawaan) membuat
+- Centang **Hanya subkegiatan yang belum berhasil ditarik** (bawaan) membuat
   penarikan yang terputus bisa dilanjutkan tanpa mengulang dari awal.
-- Jumlahnya besar (mis. 2.844 indikator untuk Kota Tegal 2026) dan jedanya
+- Jumlahnya besar (mis. 2.844 subkegiatan untuk Kota Tegal 2026) dan jedanya
   250 ms per permintaan, jadi sekali jalan bisa belasan menit. Dialog boleh
   dibatalkan kapan saja; hasil yang sudah masuk tetap tersimpan.
 - Bila 5 permintaan gagal berturut-turut (biasanya sesi SIPD habis),
@@ -85,7 +87,7 @@ REST API  POST /api/v1/jobs
           POST /api/v1/jobs/{id}/finish    (+ jobs_info, pembersihan data lama)
 
 Tarik Realisasi Keuangan:
-REST API  GET  /api/v1/realisasi-keuangan/parameter   (dari baris row_type=output)
-SIPD      POST ?m=daerah_dalev_realisasi_subkegiatan&f=load_realisasi   (per indikator)
+REST API  GET  /api/v1/realisasi-keuangan/parameter   (DISTINCT per subkegiatan)
+SIPD      POST ?m=daerah_dalev_realisasi_subkegiatan&f=tarik_realisasi_keuangan
 REST API  POST /api/v1/jobs/{id}/realisasi            (batch 25 hasil)
 ```

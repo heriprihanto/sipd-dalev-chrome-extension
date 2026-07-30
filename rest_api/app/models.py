@@ -236,11 +236,13 @@ class RealisasiSubkegiatan(BarisDalevBase, table=True):
 
 
 class RealisasiKeuangan(SQLModel, table=True):
-    """Hasil POST `f=load_realisasi` untuk satu indikator output.
+    """Hasil POST `f=tarik_realisasi_keuangan` untuk satu subkegiatan.
 
-    Parameter permintaan menjadi kunci unik, sedangkan isi respons disimpan
-    utuh di `respons` (jsonb) karena strukturnya ditentukan SIPD dan bisa
-    berubah. Kolom bertipe bisa ditambahkan belakangan tanpa kehilangan data.
+    Seluruh parameter permintaan menjadi kunci unik (ditambah `kodepemda` yang
+    tidak dikirim ke SIPD tapi dibutuhkan agar data antar pemda tidak
+    tertukar). Isi respons disimpan utuh di `respons` (jsonb) karena
+    strukturnya ditentukan SIPD; kolom bertipe bisa ditambahkan belakangan
+    tanpa kehilangan data.
     """
 
     __tablename__ = settings.table_realisasi
@@ -249,8 +251,9 @@ class RealisasiKeuangan(SQLModel, table=True):
             "tahun",
             "kodepemda",
             "kodeskpd",
+            "kodeprogram",
+            "kodekegiatan",
             "kodesubkegiatan",
-            "kodesubkegiatan_indikator",
             name=f"{settings.table_realisasi}_uq",
         ),
         {"schema": SCHEMA},
@@ -258,19 +261,13 @@ class RealisasiKeuangan(SQLModel, table=True):
 
     id: int | None = _pk_bigserial()
 
-    # --- parameter permintaan (kunci) -------------------------------------
+    # --- parameter permintaan (sekaligus kunci) ---------------------------
     tahun: int = Field(index=True, nullable=False)
     kodepemda: str = Field(sa_type=Text, nullable=False)
     kodeskpd: str = Field(sa_type=Text, nullable=False)
+    kodeprogram: str = Field(sa_type=Text, nullable=False)
+    kodekegiatan: str = Field(sa_type=Text, nullable=False)
     kodesubkegiatan: str = Field(sa_type=Text, nullable=False)
-    kodesubkegiatan_indikator: str = Field(sa_type=Text, nullable=False)
-
-    # --- parameter permintaan lainnya -------------------------------------
-    kodebidang: str | None = Field(default=None, sa_type=Text)
-    kodeprogram: str | None = Field(default=None, sa_type=Text, index=True)
-    kodekegiatan: str | None = Field(default=None, sa_type=Text)
-    idoutcome: str | None = Field(default=None, sa_type=Text)
-    idoutput: str | None = Field(default=None, sa_type=Text)
 
     # --- hasil ------------------------------------------------------------
     respons: Any | None = Field(default=None, sa_type=JSONB)
@@ -333,17 +330,23 @@ class DownloadJob(SQLModel, table=True):
     selesai_pada: datetime | None = Field(default=None, sa_type=TIPE_WAKTU)
 
 
-# Parameter yang dikirim ke `f=load_realisasi`, urut sesuai form SIPD.
+# Parameter yang dikirim ke `f=tarik_realisasi_keuangan`, urut sesuai form SIPD.
 PARAMETER_REALISASI: tuple[str, ...] = (
-    "tahun",
-    "kodeskpd",
-    "kodeprogram",
-    "kodebidang",
     "kodesubkegiatan",
     "kodekegiatan",
-    "idoutcome",
-    "idoutput",
-    "kodesubkegiatan_indikator",
+    "kodeprogram",
+    "kodeskpd",
+    "tahun",
+)
+
+# Kunci unik tabel hasil: parameter + kodepemda.
+KUNCI_REALISASI: tuple[str, ...] = (
+    "tahun",
+    "kodepemda",
+    "kodeskpd",
+    "kodeprogram",
+    "kodekegiatan",
+    "kodesubkegiatan",
 )
 
 TABEL_PER_JENIS: dict[JenisData, type[BarisDalevBase]] = {

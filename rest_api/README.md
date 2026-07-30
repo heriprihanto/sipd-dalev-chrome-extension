@@ -27,7 +27,7 @@ tabel yang sudah terbentuk (kolom tambahan selalu nullable). Matikan dengan
 | ----------------------------- | ---------------------------------------------------------- |
 | `dalev_realisasi_program`     | Baris tabel realisasi kinerja program (bidang/program/outcome) |
 | `dalev_realisasi_subkegiatan` | Baris tabel realisasi subkegiatan (subkegiatan/output)      |
-| `dalev_realisasi_keuangan`    | Hasil `f=load_realisasi` per indikator output               |
+| `dalev_realisasi_keuangan`    | Hasil `f=tarik_realisasi_keuangan` per subkegiatan           |
 | `dalev_jobs_info`             | Tahap & tanggal tarik data (`jobs_info` dari respons SIPD)  |
 | `dalev_download_jobs`         | Riwayat tiap eksekusi tombol Download / Tarik Realisasi     |
 
@@ -79,32 +79,41 @@ Semua endpoint berada di bawah `/api/v1` dan memakai header `X-API-Key` bila
 | POST   | `/ingest`                | Unggah satu file JSON hasil unduhan sekaligus   |
 | GET    | `/data/{jenis}`          | Baca baris (filter tahun/pemda/skpd/kode/row_type) |
 | GET    | `/statistik/{jenis}`     | Jumlah baris per `row_type` dan waktu pembaruan  |
-| GET    | `/realisasi-keuangan/parameter` | Daftar parameter `f=load_realisasi` dari baris output |
+| GET    | `/realisasi-keuangan/parameter` | Daftar parameter `f=tarik_realisasi_keuangan` per subkegiatan |
 | POST   | `/jobs/{job_id}/realisasi`      | Kirim hasil penarikan realisasi (batch)       |
 | GET    | `/realisasi-keuangan`           | Baca hasil penarikan realisasi                |
 
 `{jenis}` = `program`, `subkegiatan`, atau `realisasi_keuangan` (khusus
 `/statistik`).
 
-## Realisasi keuangan per indikator output
+## Realisasi keuangan per subkegiatan
 
 Tombol **Tarik Realisasi Keuangan** di extension memakai alur ini:
 
 1. `GET /api/v1/realisasi-keuangan/parameter?tahun=&kodepemda=&kodeskpd=&hanya_belum=true`
-   — parameter diambil dari `dalev_realisasi_subkegiatan` **where `row_type='output'`**,
-   berisi 9 field form: `tahun`, `kodeskpd`, `kodeprogram`, `kodebidang`,
-   `kodesubkegiatan`, `kodekegiatan`, `idoutcome`, `idoutput`,
-   `kodesubkegiatan_indikator` (plus `kodepemda` untuk kunci database);
-2. extension POST ke SIPD `?m=daerah_dalev_realisasi_subkegiatan&f=load_realisasi`
+   — parameter diambil dari `dalev_realisasi_subkegiatan`, berisi 5 field form
+   `kodesubkegiatan`, `kodekegiatan`, `kodeprogram`, `kodeskpd`, `tahun`
+   (plus `kodepemda` yang hanya dipakai sebagai kunci database);
+2. extension POST ke SIPD
+   `?m=daerah_dalev_realisasi_subkegiatan&f=tarik_realisasi_keuangan`
    satu per satu;
-3. `POST /api/v1/jobs/{job_id}/realisasi` — hasil dikirim per 25 indikator.
+3. `POST /api/v1/jobs/{job_id}/realisasi` — hasil dikirim per 25 subkegiatan.
 
-`hanya_belum=true` (bawaan) melewati indikator yang **sudah berstatus `ok``**,
-sehingga penarikan yang terputus bisa dilanjutkan; indikator yang gagal akan
-dicoba lagi. Isi respons SIPD disimpan utuh di kolom `respons` (`jsonb`)
-bersama `status` (`ok`/`gagal`), `status_http`, dan `catatan`.
+Hasil query di-**DISTINCT**: baris subkegiatan dan baris indikator output
+membawa kode yang sama, jadi tiap subkegiatan hanya ditarik sekali. Satu kode
+subkegiatan bisa dipakai beberapa OPD, karena itu sasaran dihitung dari
+kombinasi kelima field, bukan dari kode subkegiatan saja.
 
-Kunci unik tabel: `tahun, kodepemda, kodeskpd, kodesubkegiatan, kodesubkegiatan_indikator`.
+`hanya_belum=true` (bawaan) melewati subkegiatan yang **sudah berstatus `ok`**,
+sehingga penarikan yang terputus bisa dilanjutkan; yang gagal akan dicoba lagi.
+Respons SIPD disimpan utuh di kolom `respons` (`jsonb`) bersama `status`
+(`ok`/`gagal`), `status_http`, dan `catatan`.
+
+Kunci unik tabel: `tahun, kodepemda, kodeskpd, kodeprogram, kodekegiatan, kodesubkegiatan`.
+
+Tabel `dalev_realisasi_keuangan_load_realisasi` adalah arsip hasil percobaan
+endpoint sebelumnya (`f=load_realisasi`) yang hampir seluruhnya bernilai null;
+aman dihapus.
 
 ### Unggah bertahap (dipakai extension)
 

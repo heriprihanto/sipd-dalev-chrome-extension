@@ -65,18 +65,18 @@ class IngestSekali(BaseModel):
 
 
 class ParameterRealisasi(BaseModel):
-    """Parameter form POST `f=load_realisasi` untuk satu indikator output."""
+    """Parameter form POST `f=tarik_realisasi_keuangan` untuk satu subkegiatan.
 
-    tahun: int | None = None
-    kodepemda: str | None = None
-    kodeskpd: str | None = None
-    kodeprogram: str | None = None
-    kodebidang: str | None = None
+    `kodepemda` tidak dikirim ke SIPD, hanya dipakai sebagai bagian kunci di
+    database.
+    """
+
     kodesubkegiatan: str | None = None
     kodekegiatan: str | None = None
-    idoutcome: str | None = None
-    idoutput: str | None = None
-    kodesubkegiatan_indikator: str | None = None
+    kodeprogram: str | None = None
+    kodeskpd: str | None = None
+    tahun: int | None = None
+    kodepemda: str | None = None
 
 
 class HasilRealisasi(BaseModel):

@@ -11,6 +11,7 @@ from sqlmodel import Session
 from .config import settings
 from .models import (
     JENIS_DATATABLE,
+    KUNCI_REALISASI,
     PARAMETER_REALISASI,
     DownloadJob,
     JenisData,
@@ -324,15 +325,19 @@ def parameter_realisasi(
     limit: int = 500,
     offset: int = 0,
 ) -> tuple[int, list[dict[str, Any]]]:
-    """Parameter POST `f=load_realisasi`, diambil dari baris output subkegiatan.
+    """Parameter POST `f=tarik_realisasi_keuangan`, satu baris per subkegiatan.
 
-    `hanya_belum` melewati indikator yang responsnya sudah tersimpan, sehingga
-    penarikan yang terputus bisa dilanjutkan tanpa mengulang dari awal.
+    Sumbernya tabel subkegiatan; baris subkegiatan dan baris indikator output
+    membawa kode yang sama, jadi hasilnya di-DISTINCT agar tiap subkegiatan
+    hanya ditarik sekali.
+
+    `hanya_belum` melewati subkegiatan yang penarikannya sudah berhasil,
+    sehingga proses yang terputus bisa dilanjutkan tanpa mengulang dari awal.
     """
     sub = model_baris(JenisData.subkegiatan).__table__
     hasil = RealisasiKeuangan.__table__
 
-    filter_ = [sub.c.row_type == "output"]
+    filter_ = [sub.c.kodesubkegiatan != ""]
     if tahun is not None:
         filter_.append(sub.c.tahun == tahun)
     if kodepemda:
@@ -347,23 +352,25 @@ def parameter_realisasi(
                 hasil.c.tahun == sub.c.tahun,
                 hasil.c.kodepemda == sub.c.kodepemda,
                 hasil.c.kodeskpd == sub.c.kodeskpd,
+                hasil.c.kodeprogram == func.coalesce(sub.c.kodeprogram, ""),
+                hasil.c.kodekegiatan == func.coalesce(sub.c.kodekegiatan, ""),
                 hasil.c.kodesubkegiatan == sub.c.kodesubkegiatan,
-                hasil.c.kodesubkegiatan_indikator == sub.c.kodesubkegiatan_indikator,
                 hasil.c.status == "ok",
             )
             .exists()
         )
         filter_.append(~sudah)
 
+    kolom = [sub.c.kodepemda, *[sub.c[nama] for nama in PARAMETER_REALISASI]]
+    unik = select(*kolom).where(*filter_).distinct().subquery()
+
     total = session.execute(
-        select(func.count()).select_from(sub).where(*filter_)
+        select(func.count()).select_from(unik)
     ).scalar_one()
 
-    kolom = [sub.c.kodepemda, *[sub.c[nama] for nama in PARAMETER_REALISASI]]
     baris = session.execute(
-        select(*kolom)
-        .where(*filter_)
-        .order_by(sub.c.kodeskpd, sub.c.kodesubkegiatan, sub.c.id)
+        select(unik)
+        .order_by(unik.c.kodeskpd, unik.c.kodesubkegiatan)
         .limit(limit)
         .offset(offset)
     ).all()
@@ -376,7 +383,7 @@ def simpan_realisasi(
     job: DownloadJob,
     data: list[HasilRealisasi],
 ) -> int:
-    """Upsert hasil penarikan realisasi keuangan (satu baris per indikator)."""
+    """Upsert hasil penarikan realisasi keuangan (satu baris per subkegiatan)."""
     if not data:
         return 0
 
@@ -391,13 +398,9 @@ def simpan_realisasi(
             "tahun": p.tahun or job.tahun,
             "kodepemda": p.kodepemda or job.kodepemda,
             "kodeskpd": p.kodeskpd or "",
+            "kodeprogram": p.kodeprogram or "",
+            "kodekegiatan": p.kodekegiatan or "",
             "kodesubkegiatan": p.kodesubkegiatan or "",
-            "kodesubkegiatan_indikator": p.kodesubkegiatan_indikator or "",
-            "kodebidang": p.kodebidang,
-            "kodeprogram": p.kodeprogram,
-            "kodekegiatan": p.kodekegiatan,
-            "idoutcome": p.idoutcome,
-            "idoutput": p.idoutput,
             "respons": satu.respons,
             "status_http": satu.status_http,
             "status": satu.status,
@@ -406,38 +409,17 @@ def simpan_realisasi(
             "fetched_at": waktu,
             "updated_at": waktu,
         }
-        kunci = (
-            nilai["tahun"],
-            nilai["kodepemda"],
-            nilai["kodeskpd"],
-            nilai["kodesubkegiatan"],
-            nilai["kodesubkegiatan_indikator"],
-        )
+        kunci = tuple(nilai[nama] for nama in KUNCI_REALISASI)
         per_kunci[kunci] = {nama: nilai.get(nama) for nama in kolom_isi}
 
     stmt = pg_insert(tabel)
     kolom_update = {
         c.name: stmt.excluded[c.name]
         for c in tabel.columns
-        if c.name
-        not in {
-            "id",
-            "fetched_at",
-            "tahun",
-            "kodepemda",
-            "kodeskpd",
-            "kodesubkegiatan",
-            "kodesubkegiatan_indikator",
-        }
+        if c.name not in {"id", "fetched_at", *KUNCI_REALISASI}
     }
     stmt = stmt.on_conflict_do_update(
-        index_elements=[
-            "tahun",
-            "kodepemda",
-            "kodeskpd",
-            "kodesubkegiatan",
-            "kodesubkegiatan_indikator",
-        ],
+        index_elements=list(KUNCI_REALISASI),
         set_=kolom_update,
     )
 
@@ -509,13 +491,20 @@ def statistik_realisasi(session: Session) -> dict[str, Any]:
         .select_from(tabel)
         .group_by(tabel.c.status)
     ).all()
-    target = session.execute(
-        select(func.count()).select_from(sub).where(sub.c.row_type == "output")
-    ).scalar_one()
+    # Sasaran penarikan = kombinasi parameter unik, sama seperti yang
+    # dikembalikan `parameter_realisasi` (satu kode subkegiatan bisa dipakai
+    # beberapa OPD, jadi tidak cukup menghitung kode subkegiatan saja).
+    unik = (
+        select(sub.c.kodepemda, *[sub.c[nama] for nama in PARAMETER_REALISASI])
+        .where(sub.c.kodesubkegiatan != "")
+        .distinct()
+        .subquery()
+    )
+    target = session.execute(select(func.count()).select_from(unik)).scalar_one()
 
     return {
         "tabel": RealisasiKeuangan.__tablename__,
-        "jumlah_indikator_output": target,
+        "jumlah_target_penarikan": target,
         "jumlah_baris": ringkas.jumlah_baris,
         "per_status": {nama or "(kosong)": jumlah for nama, jumlah in per_status},
         "terakhir_diperbarui": ringkas.terakhir_diperbarui,
