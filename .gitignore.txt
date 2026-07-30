@@ -1,0 +1,11 @@
+venv/
+__pycache__/
+*.pyc
+.env
+firebase-service-account.json
+app/static/uploads/*/
+sql/*.sql
+*.log
+.DS_Store
+plan.md
+

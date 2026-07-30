@@ -1,34 +1,43 @@
 {
-    "manifest_version": 3,
-    "name": "SIPD - DALEV Kota Tegal 2026",
-    "description": "Integrasi SIPD DALEV - eMOnev Kota Tegal Tahun 2026",
-    "author" :"HERI PRIHANTO @ Pepedan Village",
-    "version": "1.0.0",
-    "action": {
-      "default_icon": {
-        "16": "/laba.png",
-        "32": "/laba.png",
-        "48": "/laba.png",
-        "128": "/laba.png"
-      }
-    },
-    "icons": {
+  "manifest_version": 3,
+  "name": "SIPD - DALEV Kota Tegal 2026",
+  "description": "Integrasi SIPD DALEV - eMOnev Kota Tegal Tahun 2026",
+  "author": "HERI PRIHANTO @ Pepedan Village",
+  "version": "1.1.0",
+  "action": {
+    "default_icon": {
       "16": "/laba.png",
       "32": "/laba.png",
       "48": "/laba.png",
       "128": "/laba.png"
-    },
-    "permissions": ["scripting", "activeTab"],
-    "host_permissions": [
-      "https://sipd.kemendagri.go.id/*"
-    ],
-    
-    "content_scripts": [
-      {
-        "matches": ["https://sipd.kemendagri.go.id/dalev/*"],
-        "js": ["sipd.js"],
-        "run_at": "document_idle"
-      }
-    ]
-  }
-  
+    }
+  },
+  "icons": {
+    "16": "/laba.png",
+    "32": "/laba.png",
+    "48": "/laba.png",
+    "128": "/laba.png"
+  },
+  "permissions": ["scripting", "activeTab", "storage"],
+  "host_permissions": [
+    "https://sipd.kemendagri.go.id/*",
+    "http://localhost/*",
+    "http://127.0.0.1/*",
+    "http://192.168.50.75/*"
+  ],
+  "optional_host_permissions": ["http://*/*", "https://*/*"],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "options_ui": {
+    "page": "options.html",
+    "open_in_tab": true
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://sipd.kemendagri.go.id/dalev/*"],
+      "js": ["sipd.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}

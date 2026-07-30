@@ -3,8 +3,13 @@
  *
  * Menambahkan tombol "Download Program" dan "Download Subkegiatan" pada
  * halaman dashboard DALEV (?m=daerah_dalev_dashboard). Tombol menarik SELURUH
- * baris DataTable terkait (looping per halaman sampai habis) lalu
- * menyimpannya sebagai satu file JSON.
+ * baris DataTable terkait (looping per halaman sampai habis), lalu tiap
+ * halaman langsung dikirim ke REST API untuk disimpan ke PostgreSQL. File JSON
+ * tetap bisa diunduh sebagai cadangan lewat pilihan di dialog.
+ *
+ * Permintaan ke API dijalankan service worker (background.js), bukan dari sini,
+ * karena halaman SIPD memakai HTTPS sedangkan API biasanya HTTP di jaringan
+ * lokal.
  */
 
 const PAKET_DASHBOARD = "daerah_dalev_dashboard";
@@ -83,6 +88,26 @@ const DATASET = {
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/* ------------------------------------------------------------------ *
+ * REST API (lewat service worker)
+ * ------------------------------------------------------------------ */
+
+async function apiJson(jalur, metode, body) {
+  const balasan = await chrome.runtime.sendMessage({
+    tipe: "api",
+    jalur,
+    metode,
+    body,
+  });
+  if (!balasan) {
+    throw new Error(
+      "Service worker extension tidak merespons. Muat ulang extension lalu coba lagi.",
+    );
+  }
+  if (!balasan.ok) throw new Error(balasan.pesan);
+  return balasan.data;
 }
 
 /**
@@ -194,14 +219,25 @@ async function ambilSatuHalaman(konfig, dataset, opsi) {
 
 /**
  * Menarik semua baris dengan looping start += UKURAN_HALAMAN.
- * `onProgress` dipanggil tiap halaman selesai, `batal()` dicek sebelum
- * request berikutnya supaya tombol Batal terasa responsif.
+ *
+ * `onHalaman` dipanggil (dan ditunggu) tiap halaman selesai diambil sehingga
+ * penyimpanan ke database berjalan bertahap; `onProgress` memperbarui tampilan;
+ * `batal()` dicek sebelum request berikutnya supaya tombol Batal responsif.
+ * `simpanSemua` bisa dimatikan agar baris tidak ditumpuk di memori ketika file
+ * JSON tidak diminta.
  */
-async function ambilSemuaBaris(konfig, dataset, kodeskpd, onProgress, batal) {
+async function ambilSemuaBaris(
+  konfig,
+  dataset,
+  kodeskpd,
+  { onProgress, onHalaman, batal, simpanSemua = true },
+) {
   const baris = [];
   let start = 0;
   let draw = 1;
   let total = null;
+  let terambil = 0;
+  let infoTahap = null;
 
   while (true) {
     const hasil = await ambilSatuHalaman(konfig, dataset, {
@@ -215,18 +251,22 @@ async function ambilSemuaBaris(konfig, dataset, kodeskpd, onProgress, batal) {
     if (total === null) {
       total = Number(hasil.recordsFiltered ?? hasil.recordsTotal ?? data.length);
     }
+    // Tahap & tanggal tarik data disertakan SIPD di tiap respons.
+    if (!infoTahap && hasil.jobs_info) infoTahap = hasil.jobs_info;
 
-    baris.push(...data);
-    onProgress(baris.length, total);
+    terambil += data.length;
+    if (simpanSemua) baris.push(...data);
+    if (onHalaman) await onHalaman(data, { total, terambil, infoTahap });
+    onProgress(terambil, total);
 
-    if (data.length === 0 || baris.length >= total) break;
+    if (data.length === 0 || terambil >= total) break;
     if (batal()) break;
 
     start += UKURAN_HALAMAN;
     await sleep(JEDA_MS);
   }
 
-  return { baris, total: total ?? baris.length };
+  return { baris, terambil, total: total ?? terambil, infoTahap };
 }
 
 function unduhJson(obj, namaFile) {
@@ -286,6 +326,16 @@ function bukaModalUnduh(konfig, kunciDataset) {
       <tr><td style="color:#666;padding:2px 0;">Kode Pemda</td><td>: ${konfig.kodepemda}</td></tr>
       <tr><td style="color:#666;padding:2px 0;vertical-align:top;">Perangkat Daerah</td><td>: ${labelOpd}</td></tr>
     </table>
+    <div style="font-size:13px;margin-bottom:12px;">
+      <label style="display:block;font-weight:400;margin:0 0 4px;">
+        <input type="checkbox" id="dsk-ke-db" checked style="margin-right:6px;">
+        Simpan ke database lewat REST API
+      </label>
+      <label style="display:block;font-weight:400;margin:0;">
+        <input type="checkbox" id="dsk-ke-file" style="margin-right:6px;">
+        Unduh juga sebagai file JSON
+      </label>
+    </div>
     <div id="dsk-status" style="font-size:13px;margin-bottom:8px;">
       Siap mengunduh. Data diambil bertahap ${UKURAN_HALAMAN} baris per permintaan.
     </div>
@@ -307,6 +357,8 @@ function bukaModalUnduh(konfig, kunciDataset) {
   const bar = kotak.querySelector("#dsk-bar");
   const btnTutup = kotak.querySelector("#dsk-tutup");
   const btnMulai = kotak.querySelector("#dsk-mulai");
+  const cbKeDb = kotak.querySelector("#dsk-ke-db");
+  const cbKeFile = kotak.querySelector("#dsk-ke-file");
 
   let sedangJalan = false;
   let dibatalkan = false;
@@ -327,62 +379,164 @@ function bukaModalUnduh(konfig, kunciDataset) {
 
   btnMulai.addEventListener("click", async () => {
     if (sedangJalan) return;
+
+    const keDb = cbKeDb.checked;
+    const keFile = cbKeFile.checked;
+    if (!keDb && !keFile) {
+      status.innerHTML =
+        '<span style="color:#a94442;">Pilih minimal satu tujuan:</span> database atau file JSON.';
+      return;
+    }
+
     sedangJalan = true;
     dibatalkan = false;
     btnMulai.disabled = true;
+    cbKeDb.disabled = true;
+    cbKeFile.disabled = true;
     btnTutup.textContent = "Batal";
     status.textContent = "Mengambil data...";
+    bar.style.background = "#5cb85c";
+    bar.style.width = "0%";
+
+    // Job dibuat setelah halaman pertama tiba supaya total baris server ikut
+    // tercatat; null berarti belum ada job yang perlu ditutup.
+    let job = null;
+    let tersimpanDb = 0;
+
+    const tutupJob = async (lengkap, statusJob, catatan, infoTahap) => {
+      if (!job) return null;
+      const hasil = await apiJson(`/api/v1/jobs/${job.job_id}/finish`, "POST", {
+        lengkap,
+        status: statusJob,
+        catatan: catatan || null,
+        jobs_info: infoTahap || null,
+      });
+      job = null;
+      return hasil;
+    };
 
     try {
-      const { baris, total } = await ambilSemuaBaris(
+      const { baris, terambil, total, infoTahap } = await ambilSemuaBaris(
         konfig,
         dataset,
         kodeskpd,
-        (terambil, jumlah) => {
-          const persen = jumlah ? Math.round((terambil / jumlah) * 100) : 100;
-          bar.style.width = `${Math.min(persen, 100)}%`;
-          status.textContent = `Mengambil data... ${terambil} dari ${jumlah} baris (${persen}%)`;
+        {
+          simpanSemua: keFile,
+          batal: () => dibatalkan,
+          onProgress: (sudah, jumlah) => {
+            const persen = jumlah ? Math.round((sudah / jumlah) * 100) : 100;
+            bar.style.width = `${Math.min(persen, 100)}%`;
+            const imbuhan = keDb ? ` — ${tersimpanDb} tersimpan di database` : "";
+            status.textContent =
+              `Mengambil data... ${sudah} dari ${jumlah} baris (${persen}%)` +
+              imbuhan;
+          },
+          onHalaman: async (dataHalaman, info) => {
+            if (!keDb || dataHalaman.length === 0) return;
+
+            if (!job) {
+              job = await apiJson("/api/v1/jobs", "POST", {
+                jenis_data: kunciDataset,
+                tahun: Number(konfig.tahun),
+                kodepemda: konfig.kodepemda,
+                kodeskpd: kodeskpd || "",
+                perangkat_daerah: labelOpd,
+                total_baris_server: info.total,
+                mode: "replace",
+                sumber_url: location.href,
+              });
+            }
+
+            const hasil = await apiJson(
+              `/api/v1/jobs/${job.job_id}/rows`,
+              "POST",
+              { data: dataHalaman },
+            );
+            tersimpanDb = hasil.total_tersimpan;
+          },
         },
-        () => dibatalkan,
       );
 
       const batalDipakai = dibatalkan;
-      if (batalDipakai) {
-        status.innerHTML = `<span style="color:#a94442;">Dibatalkan.</span> ${baris.length} baris yang sempat terambil tetap diunduh.`;
+      const lengkap = !batalDipakai && terambil >= total;
+
+      let ringkasanDb = "";
+      if (keDb) {
+        const hasilJob = await tutupJob(
+          lengkap,
+          batalDipakai ? "dibatalkan" : "selesai",
+          batalDipakai ? "Dibatalkan pengguna dari dashboard." : null,
+          infoTahap,
+        );
+        if (hasilJob) {
+          ringkasanDb =
+            ` ${hasilJob.jumlah_baris_tersimpan} baris tersimpan ke database` +
+            (hasilJob.jumlah_baris_dihapus
+              ? `, ${hasilJob.jumlah_baris_dihapus} baris lama dihapus`
+              : "") +
+            ".";
+        }
       }
 
-      const namaFile = `${kunciDataset}_${konfig.kodepemda}_${konfig.tahun}${
-        kodeskpd ? `_${kodeskpd}` : ""
-      }_${stempelWaktu()}.json`;
+      let ringkasanFile = "";
+      if (keFile) {
+        const namaFile = `${kunciDataset}_${konfig.kodepemda}_${konfig.tahun}${
+          kodeskpd ? `_${kodeskpd}` : ""
+        }_${stempelWaktu()}.json`;
 
-      unduhJson(
-        {
-          jenis_data: kunciDataset,
-          tahun: konfig.tahun,
-          kodepemda: konfig.kodepemda,
-          kodeskpd: kodeskpd || null,
-          perangkat_daerah: labelOpd,
-          diambil_pada: new Date().toISOString(),
-          jumlah_baris: baris.length,
-          total_baris_server: total,
-          lengkap: !batalDipakai && baris.length >= total,
-          data: baris,
-        },
-        namaFile,
-      );
+        unduhJson(
+          {
+            jenis_data: kunciDataset,
+            tahun: konfig.tahun,
+            kodepemda: konfig.kodepemda,
+            kodeskpd: kodeskpd || null,
+            perangkat_daerah: labelOpd,
+            diambil_pada: new Date().toISOString(),
+            jumlah_baris: baris.length,
+            total_baris_server: total,
+            lengkap,
+            jobs_info: infoTahap || null,
+            data: baris,
+          },
+          namaFile,
+        );
+        ringkasanFile = ` File <b>${namaFile}</b> diunduh.`;
+      }
 
-      if (!batalDipakai) {
+      if (batalDipakai) {
+        status.innerHTML =
+          `<span style="color:#a94442;">Dibatalkan</span> pada ${terambil} dari ${total} baris.` +
+          `${ringkasanDb}${ringkasanFile}` +
+          (keDb
+            ? " Data lama tidak dihapus karena unduhan belum lengkap."
+            : "");
+      } else {
         bar.style.width = "100%";
-        status.innerHTML = `<span style="color:#3c763d;">Selesai.</span> ${baris.length} baris tersimpan ke <b>${namaFile}</b>.`;
+        status.innerHTML =
+          `<span style="color:#3c763d;">Selesai.</span> ${terambil} baris terambil.` +
+          `${ringkasanDb}${ringkasanFile}`;
       }
     } catch (err) {
       console.error(`[Download ${dataset.label}]`, err);
       bar.style.background = "#d9534f";
-      status.innerHTML = `<span style="color:#a94442;">Gagal:</span> ${err.message}`;
+      // Pesan error dipasang sebagai teks, bukan HTML, karena isinya bisa
+      // berasal dari respons server.
+      status.innerHTML = '<span style="color:#a94442;">Gagal:</span> ';
+      status.appendChild(document.createTextNode(err.message));
+
+      // Job yang sudah terbuka ditandai gagal supaya riwayatnya jelas dan
+      // baris lama tidak terhapus.
+      try {
+        await tutupJob(false, "gagal", err.message, null);
+      } catch (errTutup) {
+        console.error("[Download] gagal menutup job", errTutup);
+      }
     } finally {
       sedangJalan = false;
       dibatalkan = false;
       btnMulai.disabled = false;
+      cbKeDb.disabled = false;
+      cbKeFile.disabled = false;
       btnTutup.textContent = "Tutup";
     }
   });
@@ -402,7 +556,9 @@ function buatTombol(konfig, kunciDataset) {
   tombol.id = idTombol(kunciDataset);
   tombol.className = "btn btn-primary btn-sm";
   tombol.style.marginRight = "6px";
-  tombol.title = `Unduh seluruh data realisasi ${DATASET[kunciDataset].label.toLowerCase()} sebagai JSON`;
+  tombol.title = `Tarik seluruh data realisasi ${DATASET[
+    kunciDataset
+  ].label.toLowerCase()} lalu simpan ke database (opsional: unduh JSON)`;
   tombol.innerHTML = `<i class="fa fa-download"></i> Download ${DATASET[kunciDataset].label}`;
   tombol.addEventListener("click", () => bukaModalUnduh(konfig, kunciDataset));
   return tombol;
