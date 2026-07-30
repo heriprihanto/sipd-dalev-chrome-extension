@@ -64,6 +64,50 @@ class IngestSekali(BaseModel):
     data: list[dict[str, Any]] = Field(default_factory=list)
 
 
+class ParameterRealisasi(BaseModel):
+    """Parameter form POST `f=load_realisasi` untuk satu indikator output."""
+
+    tahun: int | None = None
+    kodepemda: str | None = None
+    kodeskpd: str | None = None
+    kodeprogram: str | None = None
+    kodebidang: str | None = None
+    kodesubkegiatan: str | None = None
+    kodekegiatan: str | None = None
+    idoutcome: str | None = None
+    idoutput: str | None = None
+    kodesubkegiatan_indikator: str | None = None
+
+
+class HasilRealisasi(BaseModel):
+    """Satu hasil penarikan: parameter yang dipakai + respons SIPD."""
+
+    parameter: ParameterRealisasi
+    respons: Any | None = None
+    status_http: int | None = None
+    status: str = "ok"
+    catatan: str | None = None
+
+
+class KirimRealisasi(BaseModel):
+    data: list[HasilRealisasi] = Field(default_factory=list)
+
+
+class HasilKirimRealisasi(BaseModel):
+    job_id: UUID
+    diterima: int
+    berhasil: int
+    total_diterima: int
+    total_tersimpan: int
+
+
+class DaftarParameterRealisasi(BaseModel):
+    total: int
+    limit: int
+    offset: int
+    data: list[ParameterRealisasi]
+
+
 class RingkasanJob(BaseModel):
     job_id: UUID
     jenis_data: JenisData

@@ -11,10 +11,13 @@ from .config import settings
 from .db import get_session
 from .models import JenisData, StatusJob
 from .schemas import (
+    DaftarParameterRealisasi,
     HasilKirimBaris,
+    HasilKirimRealisasi,
     IngestSekali,
     JobBaru,
     KirimBaris,
+    KirimRealisasi,
     KonfigurasiPublik,
     RingkasanJob,
     SelesaikanJob,
@@ -168,4 +171,79 @@ def baca_data(
 
 @router.get("/statistik/{jenis}")
 def statistik(jenis: JenisData, session: SesiDb) -> dict[str, Any]:
+    if jenis == JenisData.realisasi_keuangan:
+        return service.statistik_realisasi(session)
     return service.statistik(session, jenis)
+
+
+# --------------------------------------------------------------------- #
+# Realisasi keuangan per indikator output
+# --------------------------------------------------------------------- #
+
+
+@router.get("/realisasi-keuangan/parameter", response_model=DaftarParameterRealisasi)
+def parameter_realisasi(
+    session: SesiDb,
+    tahun: int | None = None,
+    kodepemda: str | None = None,
+    kodeskpd: str | None = None,
+    hanya_belum: bool = True,
+    limit: int = Query(500, ge=1, le=5000),
+    offset: int = Query(0, ge=0),
+) -> Any:
+    """Daftar parameter POST `f=load_realisasi` dari baris output subkegiatan."""
+    total, data = service.parameter_realisasi(
+        session,
+        tahun=tahun,
+        kodepemda=kodepemda,
+        kodeskpd=kodeskpd,
+        hanya_belum=hanya_belum,
+        limit=limit,
+        offset=offset,
+    )
+    return DaftarParameterRealisasi(
+        total=total, limit=limit, offset=offset, data=data
+    )
+
+
+@router.post("/jobs/{job_id}/realisasi", response_model=HasilKirimRealisasi)
+def kirim_realisasi(job_id: UUID, permintaan: KirimRealisasi, session: SesiDb) -> Any:
+    job = _job_atau_404(session, job_id)
+    if StatusJob(job.status) != StatusJob.berjalan:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Job sudah berstatus {job.status}, tidak menerima hasil baru.",
+        )
+
+    berhasil = service.simpan_realisasi(session, job, permintaan.data)
+    return HasilKirimRealisasi(
+        job_id=job.job_id,
+        diterima=len(permintaan.data),
+        berhasil=berhasil,
+        total_diterima=job.jumlah_baris_diterima,
+        total_tersimpan=job.jumlah_baris_tersimpan,
+    )
+
+
+@router.get("/realisasi-keuangan")
+def baca_realisasi(
+    session: SesiDb,
+    tahun: int | None = None,
+    kodepemda: str | None = None,
+    kodeskpd: str | None = None,
+    kodesubkegiatan: str | None = None,
+    status_hasil: str | None = None,
+    limit: int = Query(50, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+) -> dict[str, Any]:
+    total, baris = service.cari_realisasi(
+        session,
+        tahun=tahun,
+        kodepemda=kodepemda,
+        kodeskpd=kodeskpd,
+        kodesubkegiatan=kodesubkegiatan,
+        status_hasil=status_hasil,
+        limit=limit,
+        offset=offset,
+    )
+    return {"total": total, "limit": limit, "offset": offset, "data": baris}

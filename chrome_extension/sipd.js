@@ -21,6 +21,39 @@ const UKURAN_HALAMAN = 100;
 // Jeda antar request supaya tidak membebani server SIPD.
 const JEDA_MS = 500;
 
+/* ------------------------------------------------------------------ *
+ * Tarik Realisasi Keuangan
+ * ------------------------------------------------------------------ */
+
+// Endpoint detail realisasi keuangan per indikator output.
+const REALISASI = {
+  paket: "daerah_dalev_realisasi_subkegiatan",
+  fungsi: "load_realisasi",
+  // Urutan field form sesuai permintaan asli halaman SIPD.
+  parameter: [
+    "tahun",
+    "kodeskpd",
+    "kodeprogram",
+    "kodebidang",
+    "kodesubkegiatan",
+    "kodekegiatan",
+    "idoutcome",
+    "idoutput",
+    "kodesubkegiatan_indikator",
+  ],
+};
+
+// Permintaan realisasi jauh lebih banyak (satu per indikator output), jadi
+// jedanya lebih pendek daripada looping tabel.
+const JEDA_REALISASI_MS = 250;
+
+// Hasil dikirim ke API per sekian indikator, bukan satu-satu.
+const BATCH_REALISASI = 25;
+
+// Penarikan dihentikan setelah gagal berturut-turut sebanyak ini; biasanya
+// tanda sesi SIPD sudah habis sehingga meneruskan hanya membuang waktu.
+const MAKS_GAGAL_BERURUT = 5;
+
 // Kolom persis seperti yang dikirim DataTable halaman program/subkegiatan.
 // Kedua tabel memakai susunan kolom yang sama. Urutan menentukan indeks
 // columns[i] pada payload, jadi jangan diacak.
@@ -543,24 +576,371 @@ function bukaModalUnduh(konfig, kunciDataset) {
 }
 
 /* ------------------------------------------------------------------ *
+ * Modal Tarik Realisasi Keuangan
+ * ------------------------------------------------------------------ */
+
+/** Satu permintaan POST f=load_realisasi. */
+async function ambilRealisasi(konfig, parameter) {
+  const url = `${konfig.baseUrl}/?m=${REALISASI.paket}&f=${REALISASI.fungsi}`;
+
+  const form = new URLSearchParams();
+  for (const nama of REALISASI.parameter) {
+    form.set(nama, parameter[nama] == null ? "" : String(parameter[nama]));
+  }
+
+  const res = await fetch(url, {
+    method: "POST",
+    credentials: "include",
+    headers: {
+      accept: "application/json, text/javascript, */*; q=0.01",
+      "content-type": "application/x-www-form-urlencoded; charset=UTF-8",
+      "x-requested-with": "XMLHttpRequest",
+    },
+    body: form.toString(),
+  });
+
+  const teks = await res.text();
+
+  let isi;
+  try {
+    isi = JSON.parse(teks);
+  } catch {
+    // Sesi habis membuat SIPD membalas halaman HTML dengan status 200.
+    return {
+      status: "gagal",
+      status_http: res.status,
+      respons: null,
+      catatan: `Respons bukan JSON (HTTP ${res.status}). Sesi kemungkinan sudah habis.`,
+    };
+  }
+
+  if (!res.ok || isi?.status === "error") {
+    return {
+      status: "gagal",
+      status_http: res.status,
+      respons: isi,
+      catatan: isi?.msg || `HTTP ${res.status} ${res.statusText}`,
+    };
+  }
+
+  return { status: "ok", status_http: res.status, respons: isi, catatan: null };
+}
+
+/** Mengambil seluruh parameter dari API sebelum penarikan dimulai. */
+async function ambilSemuaParameter(konfig, kodeskpd, hanyaBelum, onProgress) {
+  const parameter = [];
+  const ukuran = 500;
+  let offset = 0;
+  let total = null;
+
+  while (true) {
+    const q = new URLSearchParams({
+      tahun: String(Number(konfig.tahun)),
+      kodepemda: konfig.kodepemda,
+      hanya_belum: String(hanyaBelum),
+      limit: String(ukuran),
+      offset: String(offset),
+    });
+    if (kodeskpd) q.set("kodeskpd", kodeskpd);
+
+    const hasil = await apiJson(
+      `/api/v1/realisasi-keuangan/parameter?${q}`,
+      "GET",
+    );
+    if (total === null) total = hasil.total;
+
+    parameter.push(...hasil.data);
+    onProgress(parameter.length, total);
+
+    if (hasil.data.length < ukuran || parameter.length >= total) break;
+    offset += ukuran;
+  }
+
+  return { parameter, total: total ?? parameter.length };
+}
+
+function bukaModalRealisasi(konfig) {
+  const kodeskpd = kodeSkpdTerpilih();
+  const selectOpd = document.querySelector("#fr-kodeskpd-dashboard-rs");
+  const labelOpd = kodeskpd
+    ? selectOpd?.selectedOptions?.[0]?.textContent?.trim() || kodeskpd
+    : "Semua Perangkat Daerah";
+
+  const backdrop = document.createElement("div");
+  backdrop.style.cssText = `
+    position: fixed; inset: 0; z-index: 20000;
+    background: rgba(0,0,0,.5);
+    display: flex; align-items: center; justify-content: center;
+  `;
+
+  const kotak = document.createElement("div");
+  kotak.style.cssText = `
+    background: #fff; border-radius: 8px; padding: 20px 24px;
+    width: 500px; max-width: 92vw;
+    box-shadow: 0 6px 24px rgba(0,0,0,.3);
+  `;
+  kotak.innerHTML = `
+    <h4 style="margin:0 0 12px;font-weight:600;">
+      <i class="fa fa-money"></i> Tarik Realisasi Keuangan
+    </h4>
+    <table style="width:100%;font-size:13px;margin-bottom:12px;">
+      <tr><td style="width:38%;color:#666;padding:2px 0;">Tahun</td><td>: ${konfig.tahun}</td></tr>
+      <tr><td style="color:#666;padding:2px 0;">Kode Pemda</td><td>: ${konfig.kodepemda}</td></tr>
+      <tr><td style="color:#666;padding:2px 0;vertical-align:top;">Perangkat Daerah</td><td>: ${labelOpd}</td></tr>
+    </table>
+    <div style="font-size:13px;margin-bottom:12px;">
+      <label style="display:block;font-weight:400;margin:0;">
+        <input type="checkbox" id="dsk-r-belum" checked style="margin-right:6px;">
+        Hanya indikator yang belum berhasil ditarik
+      </label>
+    </div>
+    <div id="dsk-r-status" style="font-size:13px;margin-bottom:8px;">
+      Daftar indikator diambil dari tabel subkegiatan (baris <b>output</b>) di
+      database, lalu ditarik satu per satu dengan jeda ${JEDA_REALISASI_MS} ms.
+    </div>
+    <div style="height:8px;background:#eee;border-radius:4px;overflow:hidden;margin-bottom:16px;">
+      <div id="dsk-r-bar" style="height:100%;width:0%;background:#5cb85c;transition:width .2s;"></div>
+    </div>
+    <div style="text-align:right;">
+      <button type="button" id="dsk-r-tutup" class="btn btn-default btn-sm">Tutup</button>
+      <button type="button" id="dsk-r-mulai" class="btn btn-warning btn-sm">
+        <i class="fa fa-download"></i> Mulai Tarik
+      </button>
+    </div>
+  `;
+
+  backdrop.appendChild(kotak);
+  document.body.appendChild(backdrop);
+
+  const status = kotak.querySelector("#dsk-r-status");
+  const bar = kotak.querySelector("#dsk-r-bar");
+  const btnTutup = kotak.querySelector("#dsk-r-tutup");
+  const btnMulai = kotak.querySelector("#dsk-r-mulai");
+  const cbBelum = kotak.querySelector("#dsk-r-belum");
+
+  let sedangJalan = false;
+  let dibatalkan = false;
+
+  const tutup = () => {
+    if (sedangJalan) {
+      dibatalkan = true;
+      status.textContent = "Membatalkan setelah permintaan berjalan selesai...";
+      return;
+    }
+    backdrop.remove();
+  };
+
+  btnTutup.addEventListener("click", tutup);
+  backdrop.addEventListener("click", (e) => {
+    if (e.target === backdrop) tutup();
+  });
+
+  btnMulai.addEventListener("click", async () => {
+    if (sedangJalan) return;
+    sedangJalan = true;
+    dibatalkan = false;
+    btnMulai.disabled = true;
+    cbBelum.disabled = true;
+    btnTutup.textContent = "Batal";
+    bar.style.background = "#5cb85c";
+    bar.style.width = "0%";
+    status.textContent = "Mengambil daftar indikator dari database...";
+
+    let job = null;
+    let berhasil = 0;
+    let gagal = 0;
+
+    const tutupJob = async (lengkap, statusJob, catatan) => {
+      if (!job) return null;
+      const hasil = await apiJson(`/api/v1/jobs/${job.job_id}/finish`, "POST", {
+        lengkap,
+        status: statusJob,
+        catatan: catatan || null,
+      });
+      job = null;
+      return hasil;
+    };
+
+    try {
+      const { parameter, total } = await ambilSemuaParameter(
+        konfig,
+        kodeskpd,
+        cbBelum.checked,
+        (sudah, jumlah) => {
+          status.textContent = `Mengambil daftar indikator... ${sudah} dari ${jumlah}`;
+        },
+      );
+
+      if (parameter.length === 0) {
+        status.innerHTML = cbBelum.checked
+          ? '<span style="color:#3c763d;">Tidak ada yang perlu ditarik.</span> Semua indikator output sudah punya realisasi. Hilangkan centang untuk menarik ulang.'
+          : '<span style="color:#a94442;">Tidak ada indikator output di database.</span> Jalankan <b>Download Subkegiatan</b> lebih dulu.';
+        return;
+      }
+
+      job = await apiJson("/api/v1/jobs", "POST", {
+        jenis_data: "realisasi_keuangan",
+        tahun: Number(konfig.tahun),
+        kodepemda: konfig.kodepemda,
+        kodeskpd: kodeskpd || "",
+        perangkat_daerah: labelOpd,
+        total_baris_server: parameter.length,
+        // Penarikan bersifat per indikator, tidak menghapus data lain.
+        mode: "upsert",
+        sumber_url: location.href,
+      });
+
+      let penyangga = [];
+      let gagalBerurut = 0;
+      let diproses = 0;
+      let alasanBerhenti = null;
+
+      const kirimPenyangga = async () => {
+        if (penyangga.length === 0) return;
+        const hasil = await apiJson(
+          `/api/v1/jobs/${job.job_id}/realisasi`,
+          "POST",
+          { data: penyangga },
+        );
+        berhasil = hasil.total_tersimpan;
+        penyangga = [];
+      };
+
+      for (const satu of parameter) {
+        const hasil = await ambilRealisasi(konfig, satu);
+        diproses += 1;
+
+        if (hasil.status === "ok") {
+          gagalBerurut = 0;
+        } else {
+          gagal += 1;
+          gagalBerurut += 1;
+        }
+
+        penyangga.push({
+          parameter: {
+            ...satu,
+            // Kode pemda tidak ikut dikirim ke SIPD, tapi dipakai sebagai
+            // bagian kunci di database.
+            kodepemda: satu.kodepemda || konfig.kodepemda,
+          },
+          respons: hasil.respons,
+          status_http: hasil.status_http,
+          status: hasil.status,
+          catatan: hasil.catatan,
+        });
+
+        if (penyangga.length >= BATCH_REALISASI) await kirimPenyangga();
+
+        const persen = Math.round((diproses / parameter.length) * 100);
+        bar.style.width = `${persen}%`;
+        status.textContent =
+          `Menarik realisasi... ${diproses} dari ${parameter.length} (${persen}%)` +
+          ` — ${berhasil + penyangga.filter((p) => p.status === "ok").length} berhasil` +
+          (gagal ? `, ${gagal} gagal` : "");
+
+        if (gagalBerurut >= MAKS_GAGAL_BERURUT) {
+          alasanBerhenti =
+            `${gagalBerurut} permintaan gagal berturut-turut (${hasil.catatan}). ` +
+            "Muat ulang halaman atau coba dari halaman Realisasi Subkegiatan, lalu ulangi.";
+          break;
+        }
+        if (dibatalkan) break;
+        if (diproses < parameter.length) await sleep(JEDA_REALISASI_MS);
+      }
+
+      await kirimPenyangga();
+
+      const selesaiPenuh = !dibatalkan && !alasanBerhenti;
+      await tutupJob(
+        selesaiPenuh,
+        alasanBerhenti ? "gagal" : dibatalkan ? "dibatalkan" : "selesai",
+        alasanBerhenti ||
+          (dibatalkan ? "Dibatalkan pengguna dari dashboard." : null),
+      );
+
+      const ringkasan =
+        `${berhasil} realisasi tersimpan` +
+        (gagal ? `, ${gagal} gagal` : "") +
+        ` dari ${diproses} indikator yang diproses (total ${parameter.length}).`;
+
+      if (alasanBerhenti) {
+        bar.style.background = "#d9534f";
+        status.innerHTML = '<span style="color:#a94442;">Berhenti:</span> ';
+        status.appendChild(document.createTextNode(`${alasanBerhenti} ${ringkasan}`));
+      } else if (dibatalkan) {
+        status.innerHTML = `<span style="color:#a94442;">Dibatalkan.</span> ${ringkasan}`;
+      } else {
+        bar.style.width = "100%";
+        status.innerHTML = `<span style="color:#3c763d;">Selesai.</span> ${ringkasan}`;
+      }
+    } catch (err) {
+      console.error("[Tarik Realisasi Keuangan]", err);
+      bar.style.background = "#d9534f";
+      status.innerHTML = '<span style="color:#a94442;">Gagal:</span> ';
+      status.appendChild(document.createTextNode(err.message));
+      try {
+        await tutupJob(false, "gagal", err.message);
+      } catch (errTutup) {
+        console.error("[Tarik Realisasi Keuangan] gagal menutup job", errTutup);
+      }
+    } finally {
+      sedangJalan = false;
+      dibatalkan = false;
+      btnMulai.disabled = false;
+      cbBelum.disabled = false;
+      btnTutup.textContent = "Tutup";
+    }
+  });
+}
+
+/* ------------------------------------------------------------------ *
  * Penempatan tombol
  * ------------------------------------------------------------------ */
 
-function idTombol(kunciDataset) {
-  return `btn-download-${kunciDataset}`;
+function idTombol(kunci) {
+  return `btn-download-${kunci}`;
 }
 
-function buatTombol(konfig, kunciDataset) {
+/**
+ * Daftar tombol yang dipasang di dashboard. Dua tombol unduhan tabel dibuat
+ * dari DATASET, ditambah satu tombol penarikan realisasi keuangan.
+ */
+function daftarTombol() {
+  const daftar = Object.keys(DATASET).map((kunci) => ({
+    kunci,
+    label: `Download ${DATASET[kunci].label}`,
+    ikon: "fa-download",
+    kelas: "btn-primary",
+    judul:
+      `Tarik seluruh data realisasi ${DATASET[kunci].label.toLowerCase()} ` +
+      "lalu simpan ke database (opsional: unduh JSON)",
+    buka: (konfig) => bukaModalUnduh(konfig, kunci),
+  }));
+
+  daftar.push({
+    kunci: "realisasi-keuangan",
+    label: "Tarik Realisasi Keuangan",
+    ikon: "fa-money",
+    kelas: "btn-warning",
+    judul:
+      "Tarik detail realisasi keuangan tiap indikator output subkegiatan " +
+      "berdasarkan data yang sudah tersimpan di database",
+    buka: (konfig) => bukaModalRealisasi(konfig),
+  });
+
+  return daftar;
+}
+
+function buatTombol(konfig, spek) {
   const tombol = document.createElement("button");
   tombol.type = "button";
-  tombol.id = idTombol(kunciDataset);
-  tombol.className = "btn btn-primary btn-sm";
+  tombol.id = idTombol(spek.kunci);
+  tombol.className = `btn ${spek.kelas} btn-sm`;
   tombol.style.marginRight = "6px";
-  tombol.title = `Tarik seluruh data realisasi ${DATASET[
-    kunciDataset
-  ].label.toLowerCase()} lalu simpan ke database (opsional: unduh JSON)`;
-  tombol.innerHTML = `<i class="fa fa-download"></i> Download ${DATASET[kunciDataset].label}`;
-  tombol.addEventListener("click", () => bukaModalUnduh(konfig, kunciDataset));
+  tombol.title = spek.judul;
+  tombol.innerHTML = `<i class="fa ${spek.ikon}"></i> ${spek.label}`;
+  tombol.addEventListener("click", () => spek.buka(konfig));
   return tombol;
 }
 
@@ -586,9 +966,9 @@ function pasangTombol(konfig) {
   const wadah = wadahTombol();
   if (!wadah) return false;
 
-  for (const kunci of Object.keys(DATASET)) {
-    if (document.getElementById(idTombol(kunci))) continue;
-    const tombol = buatTombol(konfig, kunci);
+  for (const spek of daftarTombol()) {
+    if (document.getElementById(idTombol(spek.kunci))) continue;
+    const tombol = buatTombol(konfig, spek);
     if (wadah.sebelum) {
       wadah.sebelum.parentNode.insertBefore(tombol, wadah.sebelum);
     } else {
@@ -608,22 +988,32 @@ function pasangTombolMengambang(konfig) {
     position: fixed; right: 20px; bottom: 20px; z-index: 19999;
     display: flex; gap: 6px;
   `;
-  for (const kunci of Object.keys(DATASET)) {
-    if (document.getElementById(idTombol(kunci))) continue;
-    const tombol = buatTombol(konfig, kunci);
+  for (const spek of daftarTombol()) {
+    if (document.getElementById(idTombol(spek.kunci))) continue;
+    const tombol = buatTombol(konfig, spek);
     tombol.style.boxShadow = "0 2px 10px rgba(0,0,0,.3)";
     kotak.appendChild(tombol);
   }
   document.body.appendChild(kotak);
 }
 
-function halamanDashboardDalev() {
+/**
+ * Tombol dipasang di dashboard dan di halaman Realisasi Subkegiatan.
+ *
+ * Segmen `sess` pada URL berbeda antar halaman, dan endpoint load_realisasi
+ * bisa menolak sess dari halaman lain. Menyediakan tombol di halaman
+ * Realisasi Subkegiatan memberi jalan keluar bila itu terjadi.
+ */
+function halamanDalevDidukung() {
   const paket = new URLSearchParams(location.search).get("m");
-  return location.pathname.startsWith("/dalev/") && paket === PAKET_DASHBOARD;
+  return (
+    location.pathname.startsWith("/dalev/") &&
+    (paket === PAKET_DASHBOARD || paket === REALISASI.paket)
+  );
 }
 
 function init() {
-  if (!halamanDashboardDalev()) return;
+  if (!halamanDalevDidukung()) return;
 
   const konfig = konfigHalaman();
   if (!konfig.sess) {

@@ -33,8 +33,11 @@ tambahan saat disimpan; setujui permintaan izin dari Chrome.
 
 ## 3. Pakai
 
-Buka dashboard DALEV (`?m=daerah_dalev_dashboard`). Dua tombol muncul di kartu
-Informasi Dashboard: **Download Program** dan **Download Subkegiatan**.
+Buka dashboard DALEV (`?m=daerah_dalev_dashboard`). Tiga tombol muncul di kartu
+Informasi Dashboard: **Download Program**, **Download Subkegiatan**, dan
+**Tarik Realisasi Keuangan**.
+
+### Download Program / Subkegiatan
 
 Dialog menyediakan dua tujuan yang bisa dikombinasikan:
 
@@ -50,6 +53,26 @@ database.
 Unduhan yang dibatalkan atau gagal tidak menghapus data lama; job dicatat di
 tabel `dalev_download_jobs` dengan status `dibatalkan`/`gagal`.
 
+### Tarik Realisasi Keuangan
+
+Menarik detail realisasi keuangan **per indikator output subkegiatan**
+(`POST ?m=daerah_dalev_realisasi_subkegiatan&f=load_realisasi`). Daftar
+indikatornya dibaca dari database (`dalev_realisasi_subkegiatan` dengan
+`row_type='output'`), jadi **jalankan Download Subkegiatan lebih dulu**.
+
+- Centang **Hanya indikator yang belum berhasil ditarik** (bawaan) membuat
+  penarikan yang terputus bisa dilanjutkan tanpa mengulang dari awal.
+- Jumlahnya besar (mis. 2.844 indikator untuk Kota Tegal 2026) dan jedanya
+  250 ms per permintaan, jadi sekali jalan bisa belasan menit. Dialog boleh
+  dibatalkan kapan saja; hasil yang sudah masuk tetap tersimpan.
+- Bila 5 permintaan gagal berturut-turut (biasanya sesi SIPD habis),
+  penarikan berhenti sendiri dengan keterangan penyebabnya.
+
+Segmen `sess` pada URL berbeda antar halaman SIPD. Kalau muncul
+"Sesi tidak valid", muat ulang halaman, atau buka halaman **Realisasi
+Subkegiatan** (`?m=daerah_dalev_realisasi_subkegiatan`) — tombol yang sama
+juga dipasang di sana — lalu ulangi.
+
 ## Alur teknis
 
 ```
@@ -58,6 +81,11 @@ sipd.js (content script)
 background.js (service worker)      <- perlu karena halaman SIPD HTTPS
   |  fetch                             tidak boleh memanggil API HTTP langsung
 REST API  POST /api/v1/jobs
-          POST /api/v1/jobs/{id}/rows      (per halaman)
+          POST /api/v1/jobs/{id}/rows      (per halaman DataTable)
           POST /api/v1/jobs/{id}/finish    (+ jobs_info, pembersihan data lama)
+
+Tarik Realisasi Keuangan:
+REST API  GET  /api/v1/realisasi-keuangan/parameter   (dari baris row_type=output)
+SIPD      POST ?m=daerah_dalev_realisasi_subkegiatan&f=load_realisasi   (per indikator)
+REST API  POST /api/v1/jobs/{id}/realisasi            (batch 25 hasil)
 ```

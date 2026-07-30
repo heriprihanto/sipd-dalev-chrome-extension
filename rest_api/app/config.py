@@ -25,6 +25,8 @@ class Settings(BaseSettings):
 
     table_program: str = "dalev_realisasi_program"
     table_subkegiatan: str = "dalev_realisasi_subkegiatan"
+    # Hasil POST f=load_realisasi per indikator output.
+    table_realisasi: str = "dalev_realisasi_keuangan"
     # Tahap & tanggal tarik data yang menyertai respons DataTable.
     table_meta: str = "dalev_jobs_info"
     # Riwayat eksekusi tombol Download di extension.

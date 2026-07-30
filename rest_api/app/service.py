@@ -10,17 +10,26 @@ from sqlmodel import Session
 
 from .config import settings
 from .models import (
+    JENIS_DATATABLE,
+    PARAMETER_REALISASI,
     DownloadJob,
     JenisData,
     JobsInfo,
     ModeSimpan,
+    RealisasiKeuangan,
     StatusJob,
     kunci_baris,
     model_baris,
     sekarang,
 )
 from .parsing import buang_duplikat, normalisasi_baris
-from .schemas import IngestSekali, InfoTahap, JobBaru, SelesaikanJob
+from .schemas import (
+    HasilRealisasi,
+    IngestSekali,
+    InfoTahap,
+    JobBaru,
+    SelesaikanJob,
+)
 
 # Jumlah baris per statement INSERT ... ON CONFLICT.
 UKURAN_BATCH = 500
@@ -222,11 +231,19 @@ def selesaikan_job(
     Penghapusan hanya dilakukan bila unduhan dinyatakan lengkap, supaya
     unduhan yang dibatalkan di tengah jalan tidak menghapus data valid.
     """
-    cakupan = cakupan_baris(session, job) or [(job.tahun, job.kodepemda)]
+    # Penarikan realisasi keuangan bersifat menambah/memperbarui per indikator,
+    # jadi tidak ada pembersihan cakupan maupun pencatatan tahap.
+    datatable = JenisData(job.jenis_data) in JENIS_DATATABLE
+    cakupan = (
+        (cakupan_baris(session, job) or [(job.tahun, job.kodepemda)])
+        if datatable
+        else []
+    )
 
     dihapus = 0
     if (
-        permintaan.status == StatusJob.selesai
+        datatable
+        and permintaan.status == StatusJob.selesai
         and permintaan.lengkap
         and ModeSimpan(job.mode) == ModeSimpan.replace
     ):
@@ -290,6 +307,219 @@ def ingest_sekali(session: Session, permintaan: IngestSekali) -> DownloadJob:
             jobs_info=permintaan.jobs_info,
         ),
     )
+
+
+# --------------------------------------------------------------------- #
+# Realisasi keuangan per indikator output
+# --------------------------------------------------------------------- #
+
+
+def parameter_realisasi(
+    session: Session,
+    *,
+    tahun: int | None = None,
+    kodepemda: str | None = None,
+    kodeskpd: str | None = None,
+    hanya_belum: bool = True,
+    limit: int = 500,
+    offset: int = 0,
+) -> tuple[int, list[dict[str, Any]]]:
+    """Parameter POST `f=load_realisasi`, diambil dari baris output subkegiatan.
+
+    `hanya_belum` melewati indikator yang responsnya sudah tersimpan, sehingga
+    penarikan yang terputus bisa dilanjutkan tanpa mengulang dari awal.
+    """
+    sub = model_baris(JenisData.subkegiatan).__table__
+    hasil = RealisasiKeuangan.__table__
+
+    filter_ = [sub.c.row_type == "output"]
+    if tahun is not None:
+        filter_.append(sub.c.tahun == tahun)
+    if kodepemda:
+        filter_.append(sub.c.kodepemda == kodepemda)
+    if kodeskpd:
+        filter_.append(sub.c.kodeskpd == kodeskpd)
+
+    if hanya_belum:
+        sudah = (
+            select(hasil.c.id)
+            .where(
+                hasil.c.tahun == sub.c.tahun,
+                hasil.c.kodepemda == sub.c.kodepemda,
+                hasil.c.kodeskpd == sub.c.kodeskpd,
+                hasil.c.kodesubkegiatan == sub.c.kodesubkegiatan,
+                hasil.c.kodesubkegiatan_indikator == sub.c.kodesubkegiatan_indikator,
+                hasil.c.status == "ok",
+            )
+            .exists()
+        )
+        filter_.append(~sudah)
+
+    total = session.execute(
+        select(func.count()).select_from(sub).where(*filter_)
+    ).scalar_one()
+
+    kolom = [sub.c.kodepemda, *[sub.c[nama] for nama in PARAMETER_REALISASI]]
+    baris = session.execute(
+        select(*kolom)
+        .where(*filter_)
+        .order_by(sub.c.kodeskpd, sub.c.kodesubkegiatan, sub.c.id)
+        .limit(limit)
+        .offset(offset)
+    ).all()
+
+    return total, [dict(satu._mapping) for satu in baris]
+
+
+def simpan_realisasi(
+    session: Session,
+    job: DownloadJob,
+    data: list[HasilRealisasi],
+) -> int:
+    """Upsert hasil penarikan realisasi keuangan (satu baris per indikator)."""
+    if not data:
+        return 0
+
+    tabel = RealisasiKeuangan.__table__
+    waktu = sekarang()
+    kolom_isi = [c.name for c in tabel.columns if c.name != "id"]
+
+    per_kunci: dict[tuple, dict[str, Any]] = {}
+    for satu in data:
+        p = satu.parameter
+        nilai: dict[str, Any] = {
+            "tahun": p.tahun or job.tahun,
+            "kodepemda": p.kodepemda or job.kodepemda,
+            "kodeskpd": p.kodeskpd or "",
+            "kodesubkegiatan": p.kodesubkegiatan or "",
+            "kodesubkegiatan_indikator": p.kodesubkegiatan_indikator or "",
+            "kodebidang": p.kodebidang,
+            "kodeprogram": p.kodeprogram,
+            "kodekegiatan": p.kodekegiatan,
+            "idoutcome": p.idoutcome,
+            "idoutput": p.idoutput,
+            "respons": satu.respons,
+            "status_http": satu.status_http,
+            "status": satu.status,
+            "catatan": satu.catatan,
+            "job_id": job.job_id,
+            "fetched_at": waktu,
+            "updated_at": waktu,
+        }
+        kunci = (
+            nilai["tahun"],
+            nilai["kodepemda"],
+            nilai["kodeskpd"],
+            nilai["kodesubkegiatan"],
+            nilai["kodesubkegiatan_indikator"],
+        )
+        per_kunci[kunci] = {nama: nilai.get(nama) for nama in kolom_isi}
+
+    stmt = pg_insert(tabel)
+    kolom_update = {
+        c.name: stmt.excluded[c.name]
+        for c in tabel.columns
+        if c.name
+        not in {
+            "id",
+            "fetched_at",
+            "tahun",
+            "kodepemda",
+            "kodeskpd",
+            "kodesubkegiatan",
+            "kodesubkegiatan_indikator",
+        }
+    }
+    stmt = stmt.on_conflict_do_update(
+        index_elements=[
+            "tahun",
+            "kodepemda",
+            "kodeskpd",
+            "kodesubkegiatan",
+            "kodesubkegiatan_indikator",
+        ],
+        set_=kolom_update,
+    )
+
+    baris = list(per_kunci.values())
+    for bagian in _potong(baris, UKURAN_BATCH):
+        session.execute(stmt, bagian)
+
+    berhasil = sum(1 for satu in baris if satu.get("status") == "ok")
+    job.jumlah_baris_diterima += len(data)
+    job.jumlah_baris_tersimpan += berhasil
+    job.diperbarui_pada = waktu
+    session.add(job)
+    session.commit()
+    session.refresh(job)
+    return berhasil
+
+
+def cari_realisasi(
+    session: Session,
+    *,
+    tahun: int | None = None,
+    kodepemda: str | None = None,
+    kodeskpd: str | None = None,
+    kodesubkegiatan: str | None = None,
+    status_hasil: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> tuple[int, list[Any]]:
+    tabel = RealisasiKeuangan.__table__
+
+    filter_ = []
+    if tahun is not None:
+        filter_.append(tabel.c.tahun == tahun)
+    if kodepemda:
+        filter_.append(tabel.c.kodepemda == kodepemda)
+    if kodeskpd:
+        filter_.append(tabel.c.kodeskpd == kodeskpd)
+    if kodesubkegiatan:
+        filter_.append(tabel.c.kodesubkegiatan == kodesubkegiatan)
+    if status_hasil:
+        filter_.append(tabel.c.status == status_hasil)
+
+    total = session.execute(
+        select(func.count()).select_from(tabel).where(*filter_)
+    ).scalar_one()
+
+    stmt = (
+        select(RealisasiKeuangan)
+        .where(*filter_)
+        .order_by(tabel.c.kodeskpd, tabel.c.kodesubkegiatan, tabel.c.id)
+        .limit(limit)
+        .offset(offset)
+    )
+    return total, list(session.execute(stmt).scalars())
+
+
+def statistik_realisasi(session: Session) -> dict[str, Any]:
+    tabel = RealisasiKeuangan.__table__
+    sub = model_baris(JenisData.subkegiatan).__table__
+
+    ringkas = session.execute(
+        select(
+            func.count().label("jumlah_baris"),
+            func.max(tabel.c.updated_at).label("terakhir_diperbarui"),
+        ).select_from(tabel)
+    ).one()
+    per_status = session.execute(
+        select(tabel.c.status, func.count())
+        .select_from(tabel)
+        .group_by(tabel.c.status)
+    ).all()
+    target = session.execute(
+        select(func.count()).select_from(sub).where(sub.c.row_type == "output")
+    ).scalar_one()
+
+    return {
+        "tabel": RealisasiKeuangan.__tablename__,
+        "jumlah_indikator_output": target,
+        "jumlah_baris": ringkas.jumlah_baris,
+        "per_status": {nama or "(kosong)": jumlah for nama, jumlah in per_status},
+        "terakhir_diperbarui": ringkas.terakhir_diperbarui,
+    }
 
 
 def daftar_job(
